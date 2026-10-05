@@ -44,12 +44,32 @@ In the DSH profile directory (`~/.dsh/profiles/<profile>`), add the plugin to
 }
 ```
 
-The shipped `cordis.patch.yml` mounts the plugin with
+The shipped `cordis.patch.yml` mounts the plugin as a Loader entry with
 `config.projectDir = D:/src/DeepseekHarness/Projects/pyroduct`; override it in
-the profile's own `cordis.patch.yml` (id-targeted `config` entry) if your
-checkout lives elsewhere. `nodePath`/`moonPath` override the resolved binaries.
+the profile's own patch layer if your checkout lives elsewhere.
+`nodePath`/`moonPath` override the resolved binaries.
 
-Restart the app after installing — profile bundles load at boot.
+**Layer 2 — agent preset (required).** The bundle stack only loads the module;
+per `dsh-agent-preset-registry`, "the selected preset's `plugins` own the
+model-visible tools and prompt sections". In the profile's `cordis.patch.yml`
+(the user patch layer), key the shipped preset row by id and override its
+`config.plugins` with the complete child list — the override replaces the
+whole list, it does not merge:
+
+```yaml
+- id: preset-standard
+  name: "@deepseek-ai/dsh-agent-preset"
+  config:
+    plugins:
+      # ...every shipped standard row, unchanged...
+      - id: pyroduct
+        name: "@local/pyroduct-dsh"
+        config:
+          projectDir: "D:/src/DeepseekHarness/Projects/pyroduct"
+```
+
+Restart the app after installing — profile bundles and preset patches load at
+boot; new sessions resolve their tools from the patched preset.
 
 ## Provenance
 
