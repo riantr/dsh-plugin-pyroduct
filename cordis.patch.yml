@@ -1,0 +1,8 @@
+# Bundle patch: mounts the pyroduct tool plugin into the current profile.
+# `config.projectDir` is the pyroduct checkout that owns the cmd/jsoncli
+# bridge; `moonPath`/`nodePath` override the resolved binaries.
+- insert:
+    - id: pyroduct
+      name: '@riantr/pyroduct-dsh'
+      config:
+        projectDir: 'D:/src/DeepseekHarness/Projects/pyroduct'

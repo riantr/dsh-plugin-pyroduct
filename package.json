@@ -1,0 +1,41 @@
+{
+  "name": "@riantr/pyroduct-dsh",
+  "version": "0.1.24",
+  "private": false,
+  "type": "module",
+  "description": "The pyroduct philosophy state machines (subject / group / society / multi-agent, plus the agent layer and the machine algebra / Petri / Aho-Corasick / Büchi faces) as DeepSeek Harness agent tools: pyroduct_report, pyroduct_face, pyroduct_gates.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-bundle",
+    "pyroduct",
+    "moonbit",
+    "state-machine",
+    "philosophy"
+  ],
+  "license": "MIT",
+  "author": "riantr",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/riantr/dsh-plugin-pyroduct.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
