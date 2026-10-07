@@ -11,8 +11,8 @@ Three agent tools, registered through `@deepseek-ai/dsh-tools`:
 | Tool | What it does |
 |------|--------------|
 | `pyroduct_report` | Full subject-machine report: 34 states · 53 transitions · 11 phases, the two-character naming table with page citations, developmental positions |
-| `pyroduct_face` | One analysis face by `kind`: `slots` (49 triggers → 8 drive slots), `loop` (position × slot step contract), `petri` (Petri-net face), `aho` (Aho-Corasick face), `buchi` (ω-view), `pathsum` (tropical shortest path), `algebra` (machine algebra), `spec` (machine as JSON), plus `multi` / `group` / `society` / `evolution` / `cycle` / `coordinator` / `dmlref` / `causal` / `audit` and more |
-| `pyroduct_gates` | The pyroduct gate suite: `moon check` + `fmt --check` + `test` (wasm target, 129 tests) with per-command exit codes |
+| `pyroduct_face` | One analysis face by `kind`: `slots` (49 triggers → 8 drive slots), `loop` (position × slot step contract), `petri` (Petri-net face), `aho` (Aho-Corasick face), `buchi` (ω-view), `pathsum` (tropical shortest path), `algebra` (machine algebra), `spec` (machine as JSON), plus `multi` / `group` / `society` / `evolution` / `cycle` / `coordinator` / `dmlref` / `causal` / `audit` / `fleet` / `mutants` / `mbti` and more |
+| `pyroduct_gates` | The pyroduct gate suite: `moon check` + `fmt --check` + `test` (wasm target, 197 tests) with per-command exit codes |
 
 ## How it works
 

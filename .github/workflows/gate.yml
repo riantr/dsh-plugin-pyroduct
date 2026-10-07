@@ -1,0 +1,93 @@
+# CI for the DeepSeek Harness plugin (riantr/dsh-plugin-pyroduct).
+#
+# This repo holds no model semantics — it is a spawner and a formatter. What it
+# DOES hold is a set of hard-coded claims about riantr/pyroduct: the `FACES`
+# enum (which is the `kind` parameter of the pyroduct_face tool, so a face
+# missing from it is rejected by the schema before the model can ask for it),
+# the test count quoted in a tool description and in the README, and the three
+# tool names. Every one of those had drifted silently — the face list was three
+# behind — and the source comment claimed an "anti-drift" mirror that nothing
+# checked.
+#
+# So the gate is not "does it lint". It is: check out the module, build the
+# bridge, and let the module contradict the plugin if it can.
+#
+# Three facts about the MoonBit toolchain on a fresh runner are load-bearing and
+# were each learned the hard way in the sibling repo:
+#   1. install from install/unix.sh, NOT install.sh — the latter answers 403 even
+#      from a GitHub runner; and no setup-moonbit action exists (the one referenced
+#      is 404, which fails at *Set up job* before any step is named).
+#   2. `moon update` is mandatory: a fresh runner's registry index is empty and
+#      pyroduct pulls four packages from mooncakes.io, so every build command
+#      would otherwise fail to resolve dependencies.
+#   3. assert moon is on PATH right after installing, or a silent install failure
+#      surfaces three steps later as a confusing "command not found".
+name: gate
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Node is the plugin's own runtime
+        # The harness spawns `node` to run the bridge, so a green gate that never
+        # proved node exists would be a gate about nothing.
+        run: |
+          node --version
+          npm --version
+
+      - name: Install moon
+        run: |
+          set -euo pipefail
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.moon/bin:$PATH"
+          command -v moon >/dev/null || {
+            echo "::error::moon is still not on PATH after the install script"
+            exit 1
+          }
+          moon version --all
+
+      - name: Check out the newest PUBLISHED pyroduct release
+        # Deliberately the newest release tag, not master and not a pinned ref:
+        # the plugin is released against a published module, and its enum must
+        # match that version's face list. Resolving the newest tag automatically
+        # means a module that gains a face turns THIS repo red immediately —
+        # there is no pin here for anyone to forget to bump.
+        id: module
+        run: |
+          set -euo pipefail
+          ref=$(git ls-remote --tags --refs --sort=-v:refname \
+                  https://github.com/riantr/pyroduct 'refs/tags/v*' \
+                | head -1 | cut -f2)
+          if [ -z "$ref" ]; then
+            echo "::error::no published pyroduct tag found on GitHub"
+            exit 1
+          fi
+          tag=${ref#refs/tags/}
+          echo "checking the plugin against $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          git clone --depth 1 --branch "$tag" https://github.com/riantr/pyroduct pyroduct
+          echo "checked out $(git -C pyroduct rev-parse --short HEAD)"
+
+      - name: Resolve the registry index
+        working-directory: pyroduct
+        run: moon update
+
+      - name: Build the jsoncli bridge the plugin spawns
+        working-directory: pyroduct
+        run: moon build --target js
+
+      - name: The plugin's claims must match the module
+        env:
+          # The same directory the plugin's row config would name: the module
+          # checkout that owns _build/js/.../jsoncli.js.
+          PYRODUCT_PROJECT_DIR: ${{ github.workspace }}/pyroduct
+        run: node tools/validate.mjs

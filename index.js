@@ -24,11 +24,20 @@ export const inject = ['tools']
 const DEFAULT_TIMEOUT_MS = 60_000
 const GATE_TIMEOUT_MS = 600_000
 
-/** The faces list, mirroring the bridge's `faces()` (anti-drift). */
+/**
+ * The faces list, mirroring the bridge's `faces()` — which is a *checked*
+ * mirror, not a promise: `tools/validate.mjs` reads this array out of this file,
+ * asks the bridge for its own list, and fails on any difference in either
+ * direction. That check earned its place: this list had silently fallen three
+ * faces behind, and because it is the `enum` of the `pyroduct_face` tool's
+ * `kind`, every one of those faces was rejected by the schema before the model
+ * could ask for it.
+ */
 const FACES = [
   'report', 'slots', 'loop', 'multi', 'group', 'society', 'evolution', 'cycle',
-  'coordinator', 'dmlref', 'causal', 'audit', 'mermaid', 'dot', 'genesis',
-  'course', 'naming', 'principle', 'intuition', 'ml', 'ml-export', 'spec',
+  'coordinator', 'dmlref', 'causal', 'audit', 'fleet', 'mutants', 'mbti',
+  'mermaid', 'dot', 'genesis', 'course', 'naming', 'principle', 'intuition',
+  'ml', 'ml-export', 'spec',
   'association', 'pathsum', 'algebra', 'petri', 'aho', 'buchi',
 ]
 
@@ -209,7 +218,7 @@ export function apply(ctx, config) {
     defineTool({
       name: 'pyroduct_gates',
       description:
-        'Run the pyroduct gate suite with the local toolchain: moon check + fmt --check + test (wasm target; 129 tests). Returns per-command exit codes and the test totals. Use before and after changing the pyroduct model or the published package.',
+        'Run the pyroduct gate suite with the local toolchain: moon check + fmt --check + test (wasm target; 197 tests). Returns per-command exit codes and the test totals. Use before and after changing the pyroduct model or the published package.',
       parameters: {},
       output: {
         schema: {
