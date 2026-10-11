@@ -28,6 +28,14 @@ on:
   push:
     branches: [master, main]
   pull_request:
+  # Added after the fact, and the reason is worth recording: this repository's
+  # Actions were switched on only AFTER the first two pushes, so those pushes
+  # produced no runs at all — and with push/pull_request alone there was no
+  # "Run workflow" button either, i.e. the one moment you most wanted to re-run
+  # the gate was the one moment it could not be run. A manual trigger is also the
+  # right tool whenever a new pyroduct release lands: the plugin's face list has
+  # to be re-checked against it without waiting for someone to commit a no-op.
+  workflow_dispatch:
 
 jobs:
   gate:
