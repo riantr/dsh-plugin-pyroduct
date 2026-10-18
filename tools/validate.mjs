@@ -128,10 +128,22 @@ check('FACES === the bridge faces() (no face the module would reject)',
   inPluginOnly.length > 0 ? `plugin enum claims, module lacks: ${inPluginOnly.join(', ')}` : 'sets equal')
 
 // The test count is quoted in two places; both must match what `moon test` prints.
+// AND the module's own suite must actually be green: this harness answers a
+// question ABOUT the module, so a module whose tests are red must not be able to
+// pass here. Checking only the count was a real hole — `moon test` prints
+// "Total tests: N, passed: N, failed: 0." / "…passed: N-1, failed: 1.", both of
+// which match the count regex, so a red suite was reported as a clean run. The
+// count is the LAST question, not the only one.
 const testRun = await run(MOON, ['test'], { cwd: PROJECT })
-const realTotal = (testRun.stdout + testRun.stderr).match(/Total tests:\s*(\d+),\s*passed/)?.[1]
+const testOutput = testRun.stdout + testRun.stderr
+const realTotal = testOutput.match(/Total tests:\s*(\d+),\s*passed/)?.[1]
+const failedCount = testOutput.match(/Total tests:\s*\d+,\s*passed:\s*\d+,\s*failed:\s*(\d+)/)?.[1]
 check('the module test suite reports a total', Boolean(realTotal),
-  realTotal ? `${realTotal} tests` : testRun.stdout.trim().split('\n').slice(-1)[0]?.slice(0, 120))
+  realTotal ? `${realTotal} tests` : testOutput.trim().split('\n').slice(-1)[0]?.slice(0, 120))
+check('the module test suite is green',
+  testRun.code === 0 && failedCount === '0',
+  testRun.code !== 0 ? `moon test exited ${testRun.code}` : failedCount === '0' ? 'exit 0, failed 0'
+    : `moon test exited 0 but reported ${failedCount} failing test(s) — the count alone cannot tell a red suite from a green one`)
 const realTotalNum = Number(realTotal)
 for (const [where, source] of [['index.js', indexSource], ['README.md', readFileSync(path.join(ROOT, 'README.md'), 'utf8')]]) {
   const claim = [...source.matchAll(/(\d+)\s+tests/gi)].map((m) => Number(m[1]))
