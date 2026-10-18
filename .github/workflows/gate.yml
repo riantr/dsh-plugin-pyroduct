@@ -42,7 +42,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
+      # `actions/checkout` is deliberately absent, and its absence is the whole
+      # reason this file is shaped this way. This repository's Actions policy
+      # allows only actions from a repo OWNED BY riantr, pinned to a full-length
+      # commit SHA. `actions/checkout` is neither, so GitHub rejects it while it
+      # is setting the job up — before any job exists. The signature of that is
+      # `conclusion: startup_failure` with **zero jobs** and an annotation on the
+      # run rather than a red step, which is why every run here failed without a
+      # single step ever being named.
+      #
+      # A tag ref is not enough on its own either: the policy wants a SHA, and
+      # even a SHA-pinned actions/checkout would still be the wrong OWNER. So the
+      # checkout is plain git, which ubuntu-latest already has. Four lines, and
+      # the gate has no third-party action left to be denied.
+      - name: Check out this repository
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git rev-parse --short HEAD
 
       - name: Node is the plugin's own runtime
         # The harness spawns `node` to run the bridge, so a green gate that never
