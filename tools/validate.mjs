@@ -29,7 +29,7 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..')
@@ -86,6 +86,51 @@ for (const file of ['package.json', ...readdirSync(path.join(ROOT, 'locale')).ma
 
 const syntax = await run(process.execPath, ['--check', path.join(ROOT, 'index.js')])
 check('index.js parses as an ES module', syntax.code === 0, syntax.stderr.trim().split('\n')[0] ?? '')
+
+// --------------------------------------------------- what the package ships to npm
+//
+// `cordis.patch.yml` is inside the `files` list in package.json, so whatever
+// `projectDir` it holds is handed to every consumer who installs this. It used
+// to hold the author's absolute checkout path: a value that is not merely
+// unhelpful but guaranteed wrong on every other machine — and nothing checked
+// it, because a wrong path is indistinguishable from a right one until someone
+// installs the package.
+//
+// Two criteria, and the second is the one with teeth. A placeholder that the
+// plugin rejects BY NAME is honest; an author path that merely fails to spawn
+// teaches the consumer nothing. So the first check refuses to ship a real path,
+// and the second requires the failure to actually name the cause and the fix —
+// otherwise this could be "fixed" by shipping a plausible-looking path again
+// and going straight back to the opaque spawn error.
+
+const patchSource = readFileSync(path.join(ROOT, 'cordis.patch.yml'), 'utf8')
+const shippedDir = patchSource.match(/projectDir:\s*'([^']*)'/)?.[1] ?? null
+const shippedIsReal = shippedDir !== null && existsSync(path.resolve(ROOT, shippedDir))
+check('the shipped patch carries a placeholder, not a real machine path', !shippedIsReal,
+  shippedDir === null ? 'no projectDir key found in cordis.patch.yml'
+    : shippedIsReal ? `ships ${shippedDir}, which EXISTS on this machine — that is an author path`
+      : `placeholder: ${shippedDir}`)
+
+const { resolveProjectDir } = await import(pathToFileURL(path.join(ROOT, 'lib', 'project-dir.mjs')).href)
+let refusal = ''
+try {
+  resolveProjectDir({ projectDir: path.join(ROOT, 'no-such-checkout') })
+} catch (error) {
+  refusal = String(error?.message ?? error)
+}
+check('a wrong projectDir is refused with an actionable message',
+  refusal.includes('projectDir') && refusal.includes('checkout') && !refusal.includes('ENOENT'),
+  refusal.length === 0 ? 'resolveProjectDir accepted a projectDir that does not exist'
+    : refusal.includes('ENOENT') ? 'failed as a bare spawn error — names the mechanism, not the fix'
+      : refusal.slice(0, 110))
+
+// The happy path, which is what stops the check above from being satisfied by a
+// guard that rejects everything. A criterion that only ever sees the failure
+// branch cannot tell a working guard from one that throws on all input — and a
+// plugin that refuses every checkout is exactly as broken as one that accepts
+// every checkout, just less visibly.
+const accepted = resolveProjectDir({ projectDir: PROJECT ?? ROOT })
+check('a real MoonBit checkout is accepted', accepted === path.resolve(PROJECT ?? ROOT), accepted)
 
 // --------------------------------------------------- claims that need the module
 

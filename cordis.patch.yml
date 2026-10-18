@@ -1,13 +1,24 @@
 # Bundle patch: mounts the pyroduct tool plugin into the current profile.
-# `config.projectDir` is the pyroduct checkout that owns the cmd/jsoncli bridge.
 #
-# **The `projectDir` below is the author's local checkout and is shipped to npm.**
-# It does not exist on anyone else's machine, so a consumer must override it with
-# their own path before this patch will work. This file previously also claimed
-# `moonPath`/`nodePath` override the resolved binaries — it never set them, and
-# it still does not; only `projectDir` is configured here.
+# `config.projectDir` is the pyroduct checkout that owns the `cmd/jsoncli` bridge,
+# and it is REQUIRED — this package deliberately ships no bridge, so every tool
+# call spawns a real checkout's `_build/js/.../jsoncli.js`. `moon build --target js`
+# runs on first use if the bridge is not built yet, so no separate build step is
+# needed, but the checkout itself must exist.
+#
+# Which means the path is required FROM YOU, and there is no correct default for
+# it: a checkout path is a property of your machine. The placeholder below is
+# deliberately not a real path — the plugin refuses it by name rather than
+# failing later with a spawn error. Replace it with your own checkout of
+# riantr/pyroduct before enabling this row.
+#
+# (An earlier revision of this file shipped the author's absolute checkout path
+# verbatim. It was guaranteed wrong on every other machine and nothing checked
+# it, so it failed as an opaque `moon build` spawn error instead of as a message
+# that said what to change. Git history has the path; the npm tarball does not
+# need it.)
 - insert:
     - id: pyroduct
       name: '@riantr/pyroduct-dsh'
       config:
-        projectDir: 'D:/src/DeepseekHarness/Projects/pyroduct'
+        projectDir: '/path/to/pyroduct'

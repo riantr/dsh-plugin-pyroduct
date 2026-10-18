@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { resolveProjectDir } from './lib/project-dir.mjs'
 
 /** Service the plugin registers into; plugin loading is inert without tools. */
 export const inject = ['tools']
@@ -41,14 +42,18 @@ const FACES = [
   'association', 'pathsum', 'algebra', 'petri', 'aho', 'buchi',
 ]
 
-/** Resolve the pyroduct checkout from the row config (forward slashes ok). */
-function projectDirOf(config) {
-  const dir = config && config.projectDir
-  if (typeof dir !== 'string' || dir.length === 0) {
-    throw new Error('pyroduct plugin: config.projectDir is required')
-  }
-  return path.resolve(dir)
-}
+/**
+ * Resolve the pyroduct checkout from the row config (forward slashes ok).
+ *
+ * The guard itself lives in `lib/project-dir.mjs` so the anti-drift harness can
+ * exercise the real function: this module imports `defineTool` from
+ * `@deepseek-ai/dsh-tools`, a peerDependency that is not installed in a checkout
+ * of this repository, so importing index.js to test the guard fails on the peer
+ * before ever reaching it.
+ *
+ * @see lib/project-dir.mjs
+ */
+const projectDirOf = resolveProjectDir
 
 /**
  * Resolve a runnable Node. Inside the Electron host `process.execPath` is the

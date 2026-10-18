@@ -34,7 +34,7 @@ In the DSH profile directory (`~/.dsh/profiles/<profile>`), add the plugin to
 ```json
 {
   "dependencies": {
-    "@local/pyroduct-dsh": "link:D:/src/DeepseekHarness/Projects/dsh-plugin-pyroduct"
+    "@local/pyroduct-dsh": "link:/your/path/to/dsh-plugin-pyroduct"
   },
   "dsh": {
     "profile": {
@@ -44,10 +44,20 @@ In the DSH profile directory (`~/.dsh/profiles/<profile>`), add the plugin to
 }
 ```
 
-The shipped `cordis.patch.yml` mounts the plugin as a Loader entry with
-`config.projectDir = D:/src/DeepseekHarness/Projects/pyroduct`; override it in
-the profile's own patch layer if your checkout lives elsewhere.
-Only `projectDir` is set in the shipped patch; the value is the author's local checkout, so override it.
+The shipped `cordis.patch.yml` mounts the plugin as a Loader entry whose only
+setting is `config.projectDir`. That value is a **placeholder**
+(`/path/to/pyroduct`) and there is no correct default for it — a checkout path
+is a property of your machine — so you must override it in the profile's own
+patch layer.
+
+This package deliberately ships **no bridge** (unlike the MiniMax
+`pyroduct-model` plugin, which bundles `vendor/jsoncli.js`): every tool call
+spawns a real checkout's `cmd/jsoncli` bridge. So `projectDir` is required, not
+merely adjustable. The plugin refuses a value that is missing, does not exist,
+or is not a MoonBit module, and says which of the three it was — rather than
+letting `moon build` fail later with an opaque spawn error from a nonexistent
+working directory. You do not need to build the checkout yourself; the plugin
+runs `moon build --target js` on first use.
 
 **Layer 2 — agent preset (required).** The bundle stack only loads the module;
 per `dsh-agent-preset-registry`, "the selected preset's `plugins` own the
@@ -65,7 +75,7 @@ whole list, it does not merge:
       - id: pyroduct
         name: "@local/pyroduct-dsh"
         config:
-          projectDir: "D:/src/DeepseekHarness/Projects/pyroduct"
+          projectDir: "/your/path/to/pyroduct"
 ```
 
 Restart the app after installing — profile bundles and preset patches load at
