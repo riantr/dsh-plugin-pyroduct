@@ -12,7 +12,7 @@ Three agent tools, registered through `@deepseek-ai/dsh-tools`:
 |------|--------------|
 | `pyroduct_report` | Full subject-machine report: 34 states · 53 transitions · 11 phases, the two-character naming table with page citations, developmental positions |
 | `pyroduct_face` | One analysis face by `kind`: `slots` (49 triggers → 8 drive slots), `loop` (position × slot step contract), `petri` (Petri-net face), `aho` (Aho-Corasick face), `buchi` (ω-view), `pathsum` (tropical shortest path), `algebra` (machine algebra), `spec` (machine as JSON), plus `multi` / `group` / `society` / `evolution` / `cycle` / `coordinator` / `dmlref` / `causal` / `audit` / `fleet` / `mutants` / `mbti` and more |
-| `pyroduct_gates` | The pyroduct gate suite: `moon check` + `fmt --check` + `test` (wasm target, 197 tests) with per-command exit codes |
+| `pyroduct_gates` | The pyroduct gate suite: `moon check` + `fmt --check` + `test` (wasm target, 205 tests) with per-command exit codes |
 
 ## How it works
 
@@ -47,7 +47,7 @@ In the DSH profile directory (`~/.dsh/profiles/<profile>`), add the plugin to
 The shipped `cordis.patch.yml` mounts the plugin as a Loader entry with
 `config.projectDir = D:/src/DeepseekHarness/Projects/pyroduct`; override it in
 the profile's own patch layer if your checkout lives elsewhere.
-`nodePath`/`moonPath` override the resolved binaries.
+Only `projectDir` is set in the shipped patch; the value is the author's local checkout, so override it.
 
 **Layer 2 — agent preset (required).** The bundle stack only loads the module;
 per `dsh-agent-preset-registry`, "the selected preset's `plugins` own the

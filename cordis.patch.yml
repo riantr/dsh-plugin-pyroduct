@@ -1,6 +1,11 @@
 # Bundle patch: mounts the pyroduct tool plugin into the current profile.
-# `config.projectDir` is the pyroduct checkout that owns the cmd/jsoncli
-# bridge; `moonPath`/`nodePath` override the resolved binaries.
+# `config.projectDir` is the pyroduct checkout that owns the cmd/jsoncli bridge.
+#
+# **The `projectDir` below is the author's local checkout and is shipped to npm.**
+# It does not exist on anyone else's machine, so a consumer must override it with
+# their own path before this patch will work. This file previously also claimed
+# `moonPath`/`nodePath` override the resolved binaries — it never set them, and
+# it still does not; only `projectDir` is configured here.
 - insert:
     - id: pyroduct
       name: '@riantr/pyroduct-dsh'
