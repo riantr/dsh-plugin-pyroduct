@@ -218,7 +218,7 @@ export function apply(ctx, config) {
     defineTool({
       name: 'pyroduct_gates',
       description:
-        'Run the pyroduct gate suite with the local toolchain: moon check + fmt --check + test (wasm target; 205 tests). Returns per-command exit codes and the test totals. Use before and after changing the pyroduct model or the published package.',
+        'Run the pyroduct gate suite with the local toolchain: moon check + fmt --check + test (wasm target, 211 tests). Returns per-command exit codes and the test totals. Use before and after changing the pyroduct model or the published package.',
       parameters: {},
       output: {
         schema: {
