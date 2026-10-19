@@ -87,6 +87,72 @@ for (const file of ['package.json', ...readdirSync(path.join(ROOT, 'locale')).ma
 const syntax = await run(process.execPath, ['--check', path.join(ROOT, 'index.js')])
 check('index.js parses as an ES module', syntax.code === 0, syntax.stderr.trim().split('\n')[0] ?? '')
 
+// ------------------------------------------------- the publish workflow's shape
+//
+// The publish workflow fails SILENTLY when it is wrong, in two different ways,
+// and neither is visible until a tag is pushed:
+//
+//   1. This repository's Actions policy allows only actions owned by riantr
+//      and pinned to a full-length commit SHA. `actions/checkout` and
+//      `actions/setup-node` both fail that test, and GitHub rejects them
+//      while SETTING UP the job — before any job exists. The signature is
+//      `conclusion: startup_failure` with zero jobs, which is how every run
+//      here failed before the checkout became plain git.
+//
+//   2. Without `id-token: write` there is no OIDC identity, so npm has
+//      nothing to authenticate with and the publish fails with an opaque
+//      ENEEDAUTH — after the whole gate has already passed.
+//
+// Both are properties of a file that no other check looked at, and the tag
+// that would expose them is pushed rarely. So they are checked here, on
+// every push, as text. This deliberately does not parse YAML: the package
+// ships no dependencies, the checks below are all "does this string appear",
+// and a parser would add a dependency to a package that deliberately has
+// none.
+const publishPath = path.join(ROOT, '.github', 'workflows', 'publish.yml')
+const publishExists = existsSync(publishPath)
+check('a publish workflow exists', publishExists, publishExists ? '.github/workflows/publish.yml' : 'missing')
+if (publishExists) {
+  const publishSource = readFileSync(publishPath, 'utf8')
+  // Comments are stripped before anything is matched. The header of this
+  // workflow NAMES `id-token: write` to explain that the permission is what
+  // the whole mechanism rests on — and a check that reads those words out of
+  // a comment would be satisfied by a file that grants no permission at all.
+  // That is not hypothetical: the first version of this criterion passed
+  // with the permission deleted, because the explanation in the comment
+  // still said the words.
+  const publishCode = publishSource.split('\n').filter((line) => !line.trim().startsWith('#')).join('\n')
+  const permissionsBlock = publishCode.match(/^permissions:\s*\n((?:[ \t]+.*\n?)+)/m)?.[1] ?? ''
+  check('the publish workflow requests an OIDC identity',
+    /id-token:\s*write/.test(permissionsBlock),
+    /id-token:\s*write/.test(permissionsBlock) ? 'permissions: id-token: write'
+      : permissionsBlock.trim() === '' ? 'no permissions block at all'
+        : `permissions block lacks id-token: write (${permissionsBlock.trim().replace(/\n/g, ', ')})`)
+  const usesRefs = [...publishCode.matchAll(/^\s*-\s*uses:\s*(\S+)/gm)].map((m) => m[1])
+  check('the publish workflow uses no third-party action',
+    usesRefs.length === 0,
+    usesRefs.length === 0 ? 'plain git, as the Actions policy requires'
+      : `would be rejected at job setup: ${usesRefs.join(', ')}`)
+  check('the publish workflow triggers on version tags',
+    /tags:\s*\n\s*-\s*'v\*'/.test(publishCode),
+    /tags:\s*\n\s*-\s*'v\*'/.test(publishCode) ? "tags: 'v*'" : 'no v* tag filter')
+  // Only the executable lines are inspected. The comment above the publish
+  // step NAMES --otp and NODE_AUTH_TOKEN to explain why they are absent, and
+  // a check that reads those words out of a comment would be reddened by
+  // exactly the documentation that keeps the next editor from adding them.
+  // A criterion that a good comment can trip is a criterion that teaches
+  // people to delete good comments.
+  const publishStep = (publishSource.split(/^\s*-\s*name:\s*Publish\s*$/m)[1] ?? '')
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('#'))
+    .join('\n')
+  const tokenish = ['--otp', 'NODE_AUTH_TOKEN', '_authToken'].filter((t) => publishStep.includes(t))
+  check('the publish step carries no token and no --otp',
+    tokenish.length === 0,
+    tokenish.length === 0 ? 'OIDC only — the CLI authenticates itself'
+      : `mentions ${tokenish.join(', ')}`)
+}
+
 // --------------------------------------------------- what the package ships to npm
 //
 // `cordis.patch.yml` is inside the `files` list in package.json, so whatever

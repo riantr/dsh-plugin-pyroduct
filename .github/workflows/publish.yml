@@ -1,0 +1,163 @@
+# Publishes @riantr/pyroduct-dsh to npm with Trusted Publishing (OIDC).
+#
+# The point of Trusted Publishing is that this repository holds NO long-lived
+# npm token: GitHub mints a short-lived OIDC identity for the job, npm CLI
+# exchanges it for a publish token scoped to this one workflow, and the token
+# expires with the run. There is nothing to leak, nothing to rotate, and
+# nothing to store.
+#
+# Three constraints shape this file, and two of them are unusual:
+#
+#   1. `id-token: write` is the whole mechanism. Without it the job has no
+#      OIDC identity and npm falls back to a token it does not have.
+#
+#   2. This repository's Actions policy allows only actions OWNED BY riantr,
+#      pinned to a full-length commit SHA. `actions/checkout` and
+#      `actions/setup-node` both fail that test, and GitHub rejects them
+#      while SETTING UP the job -- before any job exists. The signature of
+#      that is `conclusion: startup_failure` with zero jobs, which is how
+#      every run in this repo failed before the checkout became plain git.
+#      So: no `uses:` at all. The checkout is four lines of git, and node
+#      comes from the runner image (the version is asserted below).
+#
+#   3. npm needs no `registry-url` and no NODE_AUTH_TOKEN under OIDC -- it
+#      detects the CI environment and authenticates itself. Writing an
+#      .npmrc that points at a token would defeat the whole exercise.
+#
+# The job re-runs the gate before publishing. That is deliberate: `gate.yml`
+# triggers on pushes to branches, so a tag push never runs it, and this
+# repository exists to let the module contradict the plugin. A publish that
+# has not asked the module first is exactly the failure mode this repo was
+# built to prevent.
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  id-token: write # REQUIRED for OIDC
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out this repository
+        # Plain git, for the reason in the header. Note GITHUB_SHA rather than
+        # the branch: this workflow is tag-triggered, but the same pattern
+        # would be wrong on pull_request, where GITHUB_REF_NAME is a
+        # synthetic `NNN/merge` ref that is not a branch.
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git fetch -q --depth 1 origin "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+          git rev-parse --short HEAD
+
+      - name: The toolchain must support OIDC publishing
+        # npm's Trusted Publishing needs npm >= 11.5.1 and Node >= 22.14.0.
+        # Assert both here so an old runner image fails with a sentence that
+        # names the cause, instead of an opaque ENEEDAUTH three steps later.
+        run: |
+          set -euo pipefail
+          npm_ver="$(npm --version)"
+          node -e '
+            const nodeMaj = +process.versions.node.split(".")[0]
+            const nodeMin = +process.versions.node.split(".")[1]
+            const npmParts = process.argv[1].split(".")
+            const npmMaj = +npmParts[0]
+            const npmMin = +npmParts[1] ?? 0
+            const tooOld = []
+            if (nodeMaj < 22 || (nodeMaj === 22 && nodeMin < 14)) {
+              tooOld.push("node " + process.versions.node + " < 22.14.0")
+            }
+            if (npmMaj < 11 || (npmMaj === 11 && npmMin < 5)) {
+              tooOld.push("npm " + process.argv[1] + " < 11.5.1")
+            }
+            if (tooOld.length > 0) {
+              console.error("::error::" + tooOld.join("; ") + " -- npm Trusted Publishing needs node >= 22.14.0 and npm >= 11.5.1")
+              process.exit(1)
+            }
+            console.log("node " + process.versions.node + ", npm " + process.argv[1] + " -- OK for OIDC")
+          ' "$npm_ver"
+
+      - name: The tag must match the version being published
+        # A tag of v0.1.2 over a package.json of 0.1.1 would publish 0.1.1
+        # again and npm would answer E403 "cannot publish over the existing
+        # version" -- which reads like a permissions problem rather than a
+        # version mismatch. Catch it here, where the message can say which.
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          echo "tag=$GITHUB_REF_NAME version=$version"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+
+      - name: Check out the newest PUBLISHED pyroduct release
+        # The same rule the gate uses: the plugin is released against a
+        # published module, and its face list must match that version's. The
+        # newest tag is resolved automatically, so a module that gains a face
+        # turns THIS job red immediately -- there is no pin here to forget.
+        #
+        # Cloned into RUNNER_TEMP, not into the package root: this job also
+        # publishes from the package root, and a stray checkout directory
+        # inside it is a hazard even though package.json's `files` whitelist
+        # would exclude it today.
+        run: |
+          set -euo pipefail
+          ref=$(git ls-remote --tags --refs --sort=-v:refname \
+                  https://github.com/riantr/pyroduct 'refs/tags/v*' \
+                | head -1 | cut -f2)
+          if [ -z "$ref" ]; then
+            echo "::error::no published pyroduct tag found on GitHub"
+            exit 1
+          fi
+          tag=${ref#refs/tags/}
+          echo "checking the plugin against $tag"
+          git clone --depth 1 --branch "$tag" https://github.com/riantr/pyroduct "$RUNNER_TEMP/pyroduct"
+          echo "checked out $(git -C "$RUNNER_TEMP/pyroduct" rev-parse --short HEAD)"
+
+      - name: Install moon
+        run: |
+          set -euo pipefail
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.moon/bin:$PATH"
+          command -v moon >/dev/null || {
+            echo "::error::moon is still not on PATH after the install script"
+            exit 1
+          }
+          moon version --all
+
+      - name: Resolve the registry index
+        # Mandatory on a fresh runner: its registry index is empty, and
+        # pyroduct pulls four packages from mooncakes.io.
+        working-directory: ${{ runner.temp }}/pyroduct
+        run: moon update
+
+      - name: Build the jsoncli bridge the plugin spawns
+        working-directory: ${{ runner.temp }}/pyroduct
+        run: moon build --target js
+
+      - name: The plugin's claims must match the module
+        env:
+          PYRODUCT_PROJECT_DIR: ${{ runner.temp }}/pyroduct
+        run: node tools/validate.mjs
+
+      - name: Publish
+        # No --otp, no NODE_AUTH_TOKEN, no registry-url: under OIDC the npm
+        # CLI detects the CI environment and authenticates itself. `npm
+        # publish --otp` is a different thing entirely -- it sends a VALUE,
+        # and a bare flag sends the literal string "true", which the registry
+        # rejects with E400.
+        run: |
+          set -euo pipefail
+          echo "registry=https://registry.npmjs.org/" > .npmrc
+          npm publish
+          echo "published; provenance is attached automatically under OIDC for a public repo and a public package"
