@@ -120,6 +120,17 @@ function Get-NpmOtp {
 # main block on import, which then threw "no base32 secret" at whoever was
 # merely trying to load the function. Dot-sourcing must define the function
 # and nothing else.
+#
+# The code goes out via Write-Output, NOT Write-Host, and that distinction is
+# the whole contract of this file. Write-Host writes to the HOST; in Windows
+# PowerShell 5.1 that is the information stream, and `$(...)` does not capture
+# it. So a script that printed its code with Write-Host looked perfect on
+# screen and handed npm an EMPTY --otp= when used as
+# `npm publish --otp=$(& .\tools\npm-otp.ps1)`. Only Write-Output reaches
+# stdout, and only stdout is what `$(...)` captures.
+#
+# The countdown goes to the host on purpose: it is for a human watching the
+# terminal, and it must never end up inside the captured value.
 if ($MyInvocation.InvocationName -ne '.') {
   try {
     $code = Get-NpmOtp
@@ -128,6 +139,6 @@ if ($MyInvocation.InvocationName -ne '.') {
     Write-Host "  (find the base32 secret in your authenticator app's account details)" -ForegroundColor DarkGray
     exit 1
   }
-  Write-Host $code
+  Write-Output $code
   Write-Host ("(window ends in {0}s)" -f (30 - ([int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % 30))) -ForegroundColor DarkGray
 }
