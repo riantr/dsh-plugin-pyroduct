@@ -197,16 +197,30 @@ $Mutations = @(
   @{
     Name = 'the pinned npm is replaced by latest'
     File = $Publish
-    Anchor = "npm install -g npm@11.21.1"
-    Replace = "npm install -g npm@latest"
+    Anchor = "npm@11.21.1"
+    Replace = "npm@latest"
     Criterion = 'the workflow installs a pinned npm that can stage'
   },
   @{
     Name = 'the pinned npm is lowered below what can stage'
     File = $Publish
-    Anchor = "npm install -g npm@11.21.1"
-    Replace = "npm install -g npm@11.14.0"
+    Anchor = "npm@11.21.1"
+    Replace = "npm@11.14.0"
     Criterion = 'the workflow installs a pinned npm that can stage'
+  },
+  @{
+    Name = 'the npm install goes back to the unwritable global prefix'
+    File = $Publish
+    Anchor = 'npm install -g --prefix "$RUNNER_TEMP/npmcli"'
+    Replace = 'npm install -g'
+    Criterion = 'the workflow installs npm where the runner can write it'
+  },
+  @{
+    Name = 'the installed npm is never put on PATH'
+    File = $Publish
+    Anchor = 'echo "$RUNNER_TEMP/npmcli/bin" >> "$GITHUB_PATH"'
+    Replace = 'echo "not on PATH"'
+    Criterion = 'the publish step can find the npm that was installed'
   },
   @{
     Name = 'the npm floor is lowered below what can stage'

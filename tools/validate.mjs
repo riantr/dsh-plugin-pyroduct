@@ -386,15 +386,33 @@ if (publishExists) {
   // staged publishing (11.15.0) — so the workflow installs its own npm, and
   // PINNED. An `npm@latest` here would be exactly the calendar dependency
   // this repository just spent a review removing from its MoonBit toolchain.
+  //
+  // And it is installed into a directory the runner can WRITE. The runner's
+  // global npm prefix is /usr/local, and the runner user cannot write it:
+  // the first run of this workflow died there with EACCES on
+  // /usr/local/share/man/man5. So the install names a prefix under
+  // $RUNNER_TEMP, and that same prefix is put on PATH — otherwise the
+  // publish step two steps later would quietly use the image's npm again,
+  // which cannot stage.
   const stagedMin = '11.15.0'
-  const npmPin = publishCode.match(/npm install -g npm@(\d+\.\d+\.\d+)/)
+  const npmPin = publishCode.match(/npm install -g[^\n]*npm@(\d+\.\d+\.\d+)/)
   const npmFloor = publishCode.match(/npm_min="(\d+\.\d+\.\d+)"/)
+  const npmPrefix = publishCode.match(/npm install -g --prefix "\$RUNNER_TEMP\/([A-Za-z0-9._-]+)"/)
+  const npmOnPath = publishCode.match(/echo "\$RUNNER_TEMP\/([A-Za-z0-9._-]+)\/bin" >> "\$GITHUB_PATH"/)
   const pinOk = npmPin !== null && versionAtLeast(npmPin[1], stagedMin) >= 0
   const floorOk = npmFloor !== null && versionAtLeast(npmFloor[1], stagedMin) >= 0
   check('the workflow installs a pinned npm that can stage', pinOk,
-    npmPin === null ? 'no `npm install -g npm@<version>` in the file'
-      : pinOk ? `npm install -g npm@${npmPin[1]}`
+    npmPin === null ? 'no `npm install -g ... npm@<version>` in the file'
+      : pinOk ? `npm install -g ... npm@${npmPin[1]}`
         : `npm@${npmPin[1]} predates staged publishing (${stagedMin})`)
+  check('the workflow installs npm where the runner can write it', npmPrefix !== null,
+    npmPrefix === null ? 'the install has no --prefix "$RUNNER_TEMP/..." — the runner cannot write /usr/local'
+      : `$RUNNER_TEMP/${npmPrefix[1]}`)
+  check('the publish step can find the npm that was installed', npmOnPath !== null && npmPrefix !== null && npmOnPath[1] === npmPrefix[1],
+    npmOnPath === null ? 'the prefix is never added to GITHUB_PATH, so the publish step would use the image npm'
+      : npmPrefix === null ? 'the install has no prefix, so there is no path to add'
+        : npmOnPath[1] === npmPrefix[1] ? `$RUNNER_TEMP/${npmOnPath[1]}/bin is on PATH`
+          : `the install goes to ${npmPrefix[1]} but PATH gets ${npmOnPath[1]}`)
   check('the workflow refuses to run on an npm that cannot stage', floorOk,
     npmFloor === null ? 'no npm_min= in the file'
       : floorOk ? `npm_min=${npmFloor[1]}`
