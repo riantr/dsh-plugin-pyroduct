@@ -114,10 +114,11 @@ jobs:
           ' "$npm_ver" "$npm_min"
 
       - name: The tag must match the version being published
-        # A tag of v0.1.2 over a package.json of 0.1.1 would publish 0.1.1
-        # again and npm would answer E403 "cannot publish over the existing
-        # version" -- which reads like a permissions problem rather than a
-        # version mismatch. Catch it here, where the message can say which.
+        # A tag that does not match package.json's version publishes the
+        # package.json version AGAIN, and npm would answer E403 "cannot
+        # publish over the existing version" -- which reads like a
+        # permissions problem rather than a version mismatch. Catch it here,
+        # where the message can say which.
         run: |
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
