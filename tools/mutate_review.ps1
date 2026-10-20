@@ -35,7 +35,10 @@
 [CmdletBinding()]
 param(
   # Where the working copy is made. Removed and recreated on every run.
-  [string] $Work = (Join-Path $env:TEMP 'dsh-mutate-review'),
+  # Empty means "pick a temporary directory", and the pick is made in the
+  # body rather than in the default value, because $env:TEMP does not exist
+  # on Linux — the first CI run of this file died on a null path there.
+  [string] $Work = '',
 
   # The module checkout the validator asks the module about. The gate sets
   # PYRODUCT_PROJECT_DIR; the default is the author's machine, and a wrong
@@ -44,6 +47,17 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($Work)) {
+  $tempRoot = if (-not [string]::IsNullOrWhiteSpace($env:TEMP)) {
+    $env:TEMP
+  } elseif (-not [string]::IsNullOrWhiteSpace($env:TMPDIR)) {
+    $env:TMPDIR
+  } else {
+    [IO.Path]::GetTempPath()
+  }
+  $Work = Join-Path $tempRoot 'dsh-mutate-review'
+}
 
 if ([string]::IsNullOrWhiteSpace($ProjectDir)) {
   $ProjectDir = if (-not [string]::IsNullOrWhiteSpace($env:PYRODUCT_PROJECT_DIR)) {
@@ -58,11 +72,22 @@ if ([string]::IsNullOrWhiteSpace($ProjectDir)) {
 # one is the one whose behaviour this file is really about.
 $Shell = if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
 
+# pwsh 7.4 turned native stderr into a terminating error when
+# $ErrorActionPreference is Stop. This harness runs native commands that
+# write to stderr on purpose (the OTP countdown), so that switch is turned
+# off where it exists. It does not exist on Windows PowerShell 5.1.
+if (Test-Path variable:PSNativeCommandUseErrorActionPreference) {
+  $PSNativeCommandUseErrorActionPreference = $false
+}
+
 $Repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$Validate = Join-Path $Repo 'tools\validate.mjs'
-$Publish = Join-Path $Repo '.github\workflows\publish.yml'
-$Gate = Join-Path $Repo '.github\workflows\gate.yml'
-$Guard = Join-Path $Repo 'lib\project-dir.mjs'
+# The paths are joined one segment at a time, because a backslash is a
+# separator on Windows and an ordinary character in a file name on Linux —
+# a literal '.github\workflows\publish.yml' finds nothing there.
+$Validate = Join-Path (Join-Path $Repo 'tools') 'validate.mjs'
+$Publish = Join-Path (Join-Path (Join-Path $Repo '.github') 'workflows') 'publish.yml'
+$Gate = Join-Path (Join-Path (Join-Path $Repo '.github') 'workflows') 'gate.yml'
+$Guard = Join-Path (Join-Path $Repo 'lib') 'project-dir.mjs'
 
 if (-not (Test-Path $Validate)) { throw "no validator at $Validate" }
 if (-not (Test-Path $ProjectDir)) { throw "no module checkout at $ProjectDir" }
@@ -236,7 +261,12 @@ $OtpVectors = @(
 )
 foreach ($v in $OtpVectors) {
   $cmd = ". '$OtpScript'; Get-NpmOtp -Base32Secret '$OtpSecret' -Timestamp $($v.T)"
-  $got = (& $Shell -NoProfile -Command $cmd | Out-String).Trim()
+  $raw = (& $Shell -NoProfile -Command $cmd | Out-String)
+  # The LAST non-empty line, not the whole output. If dot-sourcing ever ran
+  # the script's main block as well, that block would print a code of its
+  # own and the comparison would fail on the wrong line.
+  $got = (($raw -split "`r?`n") | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 1)
+  $got = if ($null -eq $got) { '' } else { $got.Trim() }
   $selfChecks += [pscustomobject]@{
     Check = "RFC 6238 vector T=$($v.T) is $($v.Code)"
     Verdict = $(if ($got -eq $v.Code) { 'PASS' } else { 'FAIL' })
@@ -287,7 +317,7 @@ $env:NPM_OTP_SECRET = $null
 foreach ($m in $Mutations) {
   Copy-Pristine
   $target = Join-Path $Work ($m.File.Substring($Repo.Length + 1))
-  $original = [IO.File]::ReadAllText($m.File)
+  $original = [IO.File]::ReadAllText($m.File).Replace("`r`n", "`n")
   if (-not $original.Contains($m.Anchor)) {
     $results += [pscustomobject]@{
       Mutation = $m.Name; Criterion = $m.Criterion; Verdict = 'ERROR'
@@ -305,8 +335,18 @@ foreach ($m in $Mutations) {
   }
   [IO.File]::WriteAllText($target, $mutated)
 
-  $output = & node (Join-Path $Work 'tools\validate.mjs') 2>&1 | Out-String
-  $exit = $LASTEXITCODE
+  # The validator is EXPECTED to exit non-zero here — that is what "the
+  # criterion went red" looks like. So the preference that turns a native
+  # command's failure into a terminating error is relaxed around it; the
+  # verdict is read from the output, not from the exit code.
+  $previousPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $output = & node (Join-Path (Join-Path $Work 'tools') 'validate.mjs') 2>&1 | Out-String
+    $exit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousPreference
+  }
   $line = ($output -split "`r?`n" | Where-Object { $_ -like "*$($m.Criterion)*" } | Select-Object -First 1)
   if ($null -eq $line) {
     $results += [pscustomobject]@{
