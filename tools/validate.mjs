@@ -46,6 +46,19 @@ function check(label, condition, detail = '') {
   if (!ok) problems.push(label)
 }
 
+// Compare two dotted versions. Returns 1, 0 or -1. A missing part counts as
+// 0, which is what makes `11.15` and `11.15.0` the same version.
+function versionAtLeast(have, want) {
+  const a = have.split('.').map((n) => parseInt(n, 10) || 0)
+  const b = want.split('.').map((n) => parseInt(n, 10) || 0)
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const x = a[i] ?? 0
+    const y = b[i] ?? 0
+    if (x !== y) return x > y ? 1 : -1
+  }
+  return 0
+}
+
 function run(command, args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { cwd: options.cwd, windowsHide: true })
@@ -350,9 +363,42 @@ if (publishExists) {
     stepNames.length === 0 ? 'the job has no named steps'
       : stepNames.includes('Publish') ? stepNames.join(' | ')
         : `steps are: ${stepNames.join(' | ')}`)
-  check('the publish workflow actually runs npm publish', /^\s*npm publish\s*$/m.test(publishCode),
-    /^\s*npm publish\s*$/m.test(publishCode) ? 'npm publish is there'
-      : 'no `npm publish` command anywhere in the file')
+  // The publish step must be STAGED, not direct. The trusted publisher on
+  // npmjs.com for this package is configured stage-only: it may stage a
+  // version and manage dist-tags, but it may not publish directly, and npm
+  // answers a direct `npm publish` from that configuration with a
+  // permission error that reads like a token problem.
+  //
+  // Staging is also the STRONGER posture, and npm says so: the version lands
+  // in a staging queue and a maintainer approves it with 2FA before it
+  // becomes installable, so a compromised pipeline can ask for a review but
+  // cannot publish on its own.
+  const stagesVersion = /^\s*npm stage publish\s*$/m.test(publishCode)
+  const publishesDirectly = /^\s*npm publish\s*$/m.test(publishCode)
+  check('the publish workflow stages the version for review', stagesVersion,
+    stagesVersion ? 'npm stage publish' : 'no `npm stage publish` command anywhere in the file')
+  check('the publish workflow never publishes directly', !publishesDirectly,
+    publishesDirectly ? 'a bare `npm publish` is there, and this publisher is stage-only'
+      : 'no direct `npm publish`')
+
+  // The runner image's npm is not assumed. It shipped 10.9.9 on the first
+  // run that got this far, which predates Trusted Publishing (11.5.1) AND
+  // staged publishing (11.15.0) — so the workflow installs its own npm, and
+  // PINNED. An `npm@latest` here would be exactly the calendar dependency
+  // this repository just spent a review removing from its MoonBit toolchain.
+  const stagedMin = '11.15.0'
+  const npmPin = publishCode.match(/npm install -g npm@(\d+\.\d+\.\d+)/)
+  const npmFloor = publishCode.match(/npm_min="(\d+\.\d+\.\d+)"/)
+  const pinOk = npmPin !== null && versionAtLeast(npmPin[1], stagedMin) >= 0
+  const floorOk = npmFloor !== null && versionAtLeast(npmFloor[1], stagedMin) >= 0
+  check('the workflow installs a pinned npm that can stage', pinOk,
+    npmPin === null ? 'no `npm install -g npm@<version>` in the file'
+      : pinOk ? `npm install -g npm@${npmPin[1]}`
+        : `npm@${npmPin[1]} predates staged publishing (${stagedMin})`)
+  check('the workflow refuses to run on an npm that cannot stage', floorOk,
+    npmFloor === null ? 'no npm_min= in the file'
+      : floorOk ? `npm_min=${npmFloor[1]}`
+        : `npm_min=${npmFloor[1]} is below ${stagedMin}`)
 }
 
 // ------------------------------------------------- the gate's own wiring

@@ -160,11 +160,18 @@ $Mutations = @(
     Criterion = 'the publish workflow has a step named Publish'
   },
   @{
-    Name = 'the npm publish command is gone'
+    Name = 'the publish step is commented out'
     File = $Publish
-    Anchor = "          npm publish`n"
-    Replace = "          # npm publish`n"
-    Criterion = 'the publish workflow actually runs npm publish'
+    Anchor = "          npm stage publish`n"
+    Replace = "          # npm stage publish`n"
+    Criterion = 'the publish workflow stages the version for review'
+  },
+  @{
+    Name = 'the publish step goes back to a direct publish'
+    File = $Publish
+    Anchor = "          npm stage publish`n"
+    Replace = "          npm publish`n"
+    Criterion = 'the publish workflow never publishes directly'
   },
   @{
     Name = 'the one-line step form of uses:'
@@ -176,16 +183,37 @@ $Mutations = @(
   @{
     Name = '--otp added to the publish step'
     File = $Publish
-    Anchor = "          npm publish`n"
-    Replace = "          npm publish --otp 123456`n"
+    Anchor = "          npm stage publish`n"
+    Replace = "          npm stage publish --otp 123456`n"
     Criterion = 'the publish workflow carries no token and no --otp'
   },
   @{
     Name = 'NODE_AUTH_TOKEN added to the publish step'
     File = $Publish
-    Anchor = "          npm publish`n"
-    Replace = "          NODE_AUTH_TOKEN=secret npm publish`n"
+    Anchor = "          npm stage publish`n"
+    Replace = "          NODE_AUTH_TOKEN=secret npm stage publish`n"
     Criterion = 'the publish workflow carries no token and no --otp'
+  },
+  @{
+    Name = 'the pinned npm is replaced by latest'
+    File = $Publish
+    Anchor = "npm install -g npm@11.21.1"
+    Replace = "npm install -g npm@latest"
+    Criterion = 'the workflow installs a pinned npm that can stage'
+  },
+  @{
+    Name = 'the pinned npm is lowered below what can stage'
+    File = $Publish
+    Anchor = "npm install -g npm@11.21.1"
+    Replace = "npm install -g npm@11.14.0"
+    Criterion = 'the workflow installs a pinned npm that can stage'
+  },
+  @{
+    Name = 'the npm floor is lowered below what can stage'
+    File = $Publish
+    Anchor = 'npm_min="11.15.0"'
+    Replace = 'npm_min="11.5.1"'
+    Criterion = 'the workflow refuses to run on an npm that cannot stage'
   },
   @{
     Name = 'the tag filter no longer matches version tags'

@@ -6,7 +6,7 @@
 # expires with the run. There is nothing to leak, nothing to rotate, and
 # nothing to store.
 #
-# Three constraints shape this file, and two of them are unusual:
+# FOUR constraints shape this file, and three of them are unusual:
 #
 #   1. `id-token: write` is the whole mechanism. Without it the job has no
 #      OIDC identity and npm falls back to a token it does not have.
@@ -23,6 +23,14 @@
 #   3. npm needs no `registry-url` and no NODE_AUTH_TOKEN under OIDC -- it
 #      detects the CI environment and authenticates itself. Writing an
 #      .npmrc that points at a token would defeat the whole exercise.
+#
+#   4. The trusted publisher on npmjs.com is STAGE-ONLY. It may stage a
+#      version and manage dist-tags; it may NOT publish directly. So the
+#      publish step runs `npm stage publish`, and a maintainer approves the
+#      staged version with 2FA before it becomes installable. That is not a
+#      workaround -- it is the stronger posture, and npm's own words for it
+#      are "the maximum security posture for your packages": a compromised
+#      pipeline can ask for a review, but it cannot publish on its own.
 #
 # The job re-runs the gate before publishing. That is deliberate: `gate.yml`
 # triggers on pushes to branches, so a tag push never runs it, and this
@@ -58,36 +66,44 @@ jobs:
           git checkout -q FETCH_HEAD
           git rev-parse --short HEAD
 
-      - name: The toolchain must support OIDC publishing
-        # npm's Trusted Publishing needs npm >= 11.5.1 and Node >= 22.14.0.
-        # Assert both here so an old runner image fails with a sentence that
-        # names the cause, instead of an opaque ENEEDAUTH three steps later.
+      - name: The toolchain must support staged publishing
+        # The runner image ships npm 10.9.9 — measured on the first run
+        # that reached this step. That predates BOTH npm's Trusted
+        # Publishing (11.5.1) and staged publishing (11.15.0), so this
+        # workflow installs its own npm instead of assuming the image's.
+        #
+        # It is PINNED, for the same reason the MoonBit toolchain is worth
+        # pinning: a publish step that depends on the calendar is a publish
+        # step that breaks on a Tuesday. 11.21.1 is the last 11.x; npm
+        # 11.16.0 fixed the staged flow that dropped the file stats, so
+        # this line records the approver in the published metadata; and its
+        # node range (^20.17.0 || >=22.9.0) covers the runner's node
+        # 22.23.3 and node 20 LTS alike.
         run: |
           set -euo pipefail
+          npm install -g npm@11.21.1
           npm_ver="$(npm --version)"
+          npm_min="11.15.0"
           node -e '
+            const [ver, min] = process.argv.slice(1)
+            const parts = (v) => v.split(".").map((n) => parseInt(n, 10) || 0)
+            const [vMaj, vMin] = parts(ver)
+            const [mMaj, mMin] = parts(min)
             const nodeMaj = +process.versions.node.split(".")[0]
             const nodeMin = +process.versions.node.split(".")[1]
-            const npmParts = process.argv[1].split(".")
-            const npmMaj = +npmParts[0]
-            // `+npmParts[1] ?? 0` is NOT the same thing: unary + binds tighter
-            // than ??, so a missing minor becomes NaN, and `NaN ?? 0` is NaN
-            // (?? only catches null and undefined). `NaN < 5` is false, so the
-            // version check would have passed on a version it could not read.
-            const npmMin = npmParts[1] ? +npmParts[1] : 0
             const tooOld = []
             if (nodeMaj < 22 || (nodeMaj === 22 && nodeMin < 14)) {
               tooOld.push("node " + process.versions.node + " < 22.14.0")
             }
-            if (npmMaj < 11 || (npmMaj === 11 && npmMin < 5)) {
-              tooOld.push("npm " + process.argv[1] + " < 11.5.1")
+            if (vMaj < mMaj || (vMaj === mMaj && vMin < mMin)) {
+              tooOld.push("npm " + ver + " < " + min)
             }
             if (tooOld.length > 0) {
-              console.error("::error::" + tooOld.join("; ") + " -- npm Trusted Publishing needs node >= 22.14.0 and npm >= 11.5.1")
+              console.error("::error::" + tooOld.join("; ") + " -- staged publishing needs node >= 22.14.0 and npm >= " + min)
               process.exit(1)
             }
-            console.log("node " + process.versions.node + ", npm " + process.argv[1] + " -- OK for OIDC")
-          ' "$npm_ver"
+            console.log("node " + process.versions.node + ", npm " + ver + " -- OK for staged publishing")
+          ' "$npm_ver" "$npm_min"
 
       - name: The tag must match the version being published
         # A tag of v0.1.2 over a package.json of 0.1.1 would publish 0.1.1
@@ -160,6 +176,23 @@ jobs:
         run: node tools/validate.mjs
 
       - name: Publish
+        # `npm stage publish`, NOT `npm publish`.
+        #
+        # This package's trusted publisher on npmjs.com is configured
+        # STAGE-ONLY: it may stage a version and manage dist-tags, but it
+        # may not publish directly. npm answers a direct `npm publish` from
+        # that configuration with a permission error, and the error is
+        # ambiguous enough to read like a token problem.
+        #
+        # Staging is also the STRONGER posture, and npm says so: the version
+        # lands in a staging queue, and a maintainer approves it with 2FA
+        # before it becomes installable. A compromised CI pipeline can then
+        # no longer publish on its own — it can only ask for a review.
+        #
+        # `npm stage publish` needs no 2FA of its own and works over OIDC.
+        # The approval is the part a human does, afterwards, at npmjs.com
+        # (the Staged Packages tab) or with `npm stage approve <stage-id>`.
+        #
         # No --otp, no NODE_AUTH_TOKEN, no registry-url: under OIDC the npm
         # CLI detects the CI environment and authenticates itself. `npm
         # publish --otp` is a different thing entirely -- it sends a VALUE,
@@ -168,5 +201,5 @@ jobs:
         run: |
           set -euo pipefail
           echo "registry=https://registry.npmjs.org/" > .npmrc
-          npm publish
-          echo "published; provenance is attached automatically under OIDC for a public repo and a public package"
+          npm stage publish
+          echo "staged; a maintainer must approve it with 2FA before it becomes installable"
