@@ -32,7 +32,8 @@
   Verified against the RFC 6238 SHA-1 test vectors (secret
   "12345678901234567890", i.e. base32 GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ):
   T=59 -> 287082, T=1111111109 -> 081804, T=1111111111 -> 050471,
-  T=1234567890 -> 005924.
+  T=1234567890 -> 005924, T=2000000000 -> 279037, T=20000000000 -> 353130.
+  All six are asserted in tools/mutate_review.ps1's sibling check.
 #>
 function Get-NpmOtp {
   [CmdletBinding()]
@@ -121,24 +122,31 @@ function Get-NpmOtp {
 # merely trying to load the function. Dot-sourcing must define the function
 # and nothing else.
 #
-# The code goes out via Write-Output, NOT Write-Host, and that distinction is
-# the whole contract of this file. Write-Host writes to the HOST; in Windows
-# PowerShell 5.1 that is the information stream, and `$(...)` does not capture
-# it. So a script that printed its code with Write-Host looked perfect on
-# screen and handed npm an EMPTY --otp= when used as
-# `npm publish --otp=$(& .\tools\npm-otp.ps1)`. Only Write-Output reaches
-# stdout, and only stdout is what `$(...)` captures.
+# The contract of this file is one line: STDOUT carries the code and NOTHING
+# else, so every way of capturing it -- `$(...)`, a pipe, a file redirect --
+# yields exactly the six digits.
 #
-# The countdown goes to the host on purpose: it is for a human watching the
-# terminal, and it must never end up inside the captured value.
+# Write-Host is not that contract. In Windows PowerShell 5.1 it writes to the
+# HOST, and when the process's output is redirected the host's text lands in
+# the redirected stdout. A script that printed its code with Write-Host looked
+# perfect on screen and handed npm an EMPTY --otp= when used as
+# `npm publish --otp=$(& .\tools\npm-otp.ps1)`. So the code goes out via
+# Write-Output, which reaches stdout and only stdout.
+#
+# Everything else -- the countdown and the error message -- goes to STDERR
+# through [Console]::Error.WriteLine. Write-Host would have been wrong there
+# too, and in the same way: it reaches the redirected stdout as well, so
+# `npm-otp.ps1 > otp.txt` produced a TWO-line file and npm would have been
+# handed six digits with a countdown glued to them. A human still sees stderr
+# on the terminal, which is where a countdown belongs.
 if ($MyInvocation.InvocationName -ne '.') {
   try {
     $code = Get-NpmOtp
   } catch {
-    Write-Host $_.Exception.Message -ForegroundColor Red
-    Write-Host "  (find the base32 secret in your authenticator app's account details)" -ForegroundColor DarkGray
+    [Console]::Error.WriteLine($_.Exception.Message)
+    [Console]::Error.WriteLine("  (find the base32 secret in your authenticator app's account details)")
     exit 1
   }
   Write-Output $code
-  Write-Host ("(window ends in {0}s)" -f (30 - ([int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % 30))) -ForegroundColor DarkGray
+  [Console]::Error.WriteLine("(window ends in {0}s)" -f (30 - ([int][DateTimeOffset]::UtcNow.ToUnixTimeSeconds() % 30)))
 }

@@ -70,7 +70,11 @@ jobs:
             const nodeMin = +process.versions.node.split(".")[1]
             const npmParts = process.argv[1].split(".")
             const npmMaj = +npmParts[0]
-            const npmMin = +npmParts[1] ?? 0
+            // `+npmParts[1] ?? 0` is NOT the same thing: unary + binds tighter
+            // than ??, so a missing minor becomes NaN, and `NaN ?? 0` is NaN
+            // (?? only catches null and undefined). `NaN < 5` is false, so the
+            // version check would have passed on a version it could not read.
+            const npmMin = npmParts[1] ? +npmParts[1] : 0
             const tooOld = []
             if (nodeMaj < 22 || (nodeMaj === 22 && nodeMin < 14)) {
               tooOld.push("node " + process.versions.node + " < 22.14.0")
@@ -111,9 +115,14 @@ jobs:
         # would exclude it today.
         run: |
           set -euo pipefail
-          ref=$(git ls-remote --tags --refs --sort=-v:refname \
-                  https://github.com/riantr/pyroduct 'refs/tags/v*' \
-                | head -1 | cut -f2)
+          # The full output is captured and the first line is taken AFTERWARD.
+          # `git ls-remote ... | head -1` closes the pipe after one line, and
+          # git can still be writing when it does — it dies of SIGPIPE, and
+          # `set -o pipefail` turns that into a failed step. It works today
+          # only because four tags fit in the pipe buffer.
+          refs=$(git ls-remote --tags --refs --sort=-v:refname \
+                  https://github.com/riantr/pyroduct 'refs/tags/v*')
+          ref=$(printf '%s\n' "$refs" | sed -n '1p' | cut -f2)
           if [ -z "$ref" ]; then
             echo "::error::no published pyroduct tag found on GitHub"
             exit 1

@@ -87,10 +87,143 @@ for (const file of ['package.json', ...readdirSync(path.join(ROOT, 'locale')).ma
 const syntax = await run(process.execPath, ['--check', path.join(ROOT, 'index.js')])
 check('index.js parses as an ES module', syntax.code === 0, syntax.stderr.trim().split('\n')[0] ?? '')
 
+// --------------------------------------------------------------- block structure
+//
+// A deliberately small reader for the block-style YAML a workflow file is
+// written in. It is not a YAML parser and does not pretend to be: it handles
+// block mappings, block sequences and block scalars, and stops there.
+//
+// What it buys is the one thing a regex cannot have: the answer to "which
+// key is this nested under?". Every question the publish checks ask is a
+// question about POSITION — is `id-token: write` in the top-level
+// `permissions:` block or in a job-level one that REPLACES it? Is `tags:`
+// under `on: push:` or under `on: pull_request:`? — and position is exactly
+// what a flat text search throws away.
+//
+// Block scalars (`run: |`) are why this exists rather than another regex. A
+// shell body is opaque text: `echo "a: b"` is not a mapping, and a `#` in it
+// is not a comment. The reader keeps a scalar's contents out of the
+// structure entirely, so what the structure shows is the workflow's own
+// shape.
+function stripComment(line) {
+  let quote = null
+  for (let i = 0; i < line.length; i += 1) {
+    const c = line[i]
+    if (quote !== null) {
+      if (c === quote) quote = null
+      continue
+    }
+    if (c === '"' || c === "'") { quote = c; continue }
+    if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i)
+  }
+  return line
+}
+
+function readStructure(source) {
+  const raw = source.split('\n').map(stripComment)
+  let pos = 0
+
+  const head = () => {
+    while (pos < raw.length) {
+      const text = raw[pos].trim()
+      if (text === '') { pos += 1; continue }
+      return { indent: raw[pos].length - raw[pos].trimStart().length, text }
+    }
+    return null
+  }
+
+  const skipScalar = (headerIndent) => {
+    while (pos < raw.length) {
+      const line = raw[pos]
+      if (line.trim() === '') { pos += 1; continue }
+      if (line.length - line.trimStart().length <= headerIndent) break
+      pos += 1
+    }
+  }
+
+  const scalar = (text) => {
+    const t = text.trim()
+    if (t.length >= 2 && ((t.startsWith("'") && t.endsWith("'")) || (t.startsWith('"') && t.endsWith('"')))) {
+      return t.slice(1, -1)
+    }
+    return t
+  }
+
+  const node = (minIndent) => {
+    const first = head()
+    if (first === null || first.indent < minIndent) return undefined
+    if (first.text === '-' || first.text.startsWith('- ')) {
+      const items = []
+      for (;;) {
+        const cur = head()
+        if (cur === null || cur.indent !== first.indent) break
+        if (cur.text !== '-' && !cur.text.startsWith('- ')) break
+        const rest = cur.text === '-' ? '' : cur.text.slice(2).trim()
+        if (rest === '') {
+          pos += 1
+          items.push(node(first.indent + 1) ?? null)
+          continue
+        }
+        if (/^[^:]+:(\s|$)/.test(rest)) {
+          // `- name: X` — the item is a mapping whose first key sits two
+          // columns in. Rewrite the line so the mapping reader sees it.
+          raw[pos] = ' '.repeat(first.indent + 2) + rest
+          items.push(node(first.indent + 2) ?? null)
+          continue
+        }
+        pos += 1
+        items.push(scalar(rest))
+      }
+      return items
+    }
+    const map = {}
+    for (;;) {
+      const cur = head()
+      if (cur === null || cur.indent !== first.indent) break
+      if (cur.text === '-' || cur.text.startsWith('- ')) break
+      const m = cur.text.match(/^([^:]+):\s*(.*)$/)
+      if (m === null) { pos += 1; continue }
+      pos += 1
+      const key = m[1].trim().replace(/^["']|["']$/g, '')
+      const value = m[2].trim()
+      if (value === '') {
+        map[key] = node(first.indent + 1) ?? null
+        continue
+      }
+      if (/^[|>][-+]?\d*$/.test(value)) {
+        skipScalar(cur.indent)
+        map[key] = null
+        continue
+      }
+      map[key] = scalar(value)
+    }
+    return map
+  }
+
+  return node(0) ?? {}
+}
+
+// Every occurrence of a key, at any depth. Used for `uses:` — a third-party
+// action is a third-party action wherever it is written, and the first
+// version of that check only saw the one-line step form.
+function collectKeys(node, key, found = []) {
+  if (Array.isArray(node)) {
+    for (const item of node) collectKeys(item, key, found)
+    return found
+  }
+  if (node && typeof node === 'object') {
+    for (const [k, v] of Object.entries(node)) {
+      if (k === key) found.push(v)
+      collectKeys(v, key, found)
+    }
+  }
+  return found
+}
+
 // ------------------------------------------------- the publish workflow's shape
 //
-// The publish workflow fails SILENTLY when it is wrong, in two different ways,
-// and neither is visible until a tag is pushed:
+// The publish workflow fails SILENTLY when it is wrong, in three different
+// ways, and none of them is visible until a tag is pushed:
 //
 //   1. This repository's Actions policy allows only actions owned by riantr
 //      and pinned to a full-length commit SHA. `actions/checkout` and
@@ -103,54 +236,160 @@ check('index.js parses as an ES module', syntax.code === 0, syntax.stderr.trim()
 //      nothing to authenticate with and the publish fails with an opaque
 //      ENEEDAUTH — after the whole gate has already passed.
 //
-// Both are properties of a file that no other check looked at, and the tag
-// that would expose them is pushed rarely. So they are checked here, on
-// every push, as text. This deliberately does not parse YAML: the package
-// ships no dependencies, the checks below are all "does this string appear",
-// and a parser would add a dependency to a package that deliberately has
-// none.
+//   3. A tag that does not match package.json's version is refused by npm
+//      with E403, which reads like a permissions problem rather than a
+//      version mismatch.
+//
+// These are properties of a file no other check looked at, and the tag that
+// would expose them is pushed rarely. So they are checked here, on every
+// push.
+//
+// The first version of these checks read the file as TEXT, and a text check
+// cannot see structure. Five ways of breaking the workflow therefore passed
+// every criterion:
+//
+//   - a job-level `permissions: {}` — which REPLACES the top-level block, so
+//     OIDC dies while the top-level `id-token: write` is still there to be
+//     found;
+//   - the ordinary two-line step form (`- name: X` / `  uses: Y`), invisible
+//     to a pattern that wanted the dash and the `uses:` on one line;
+//   - a `tags:` filter moved under `pull_request:`, where the workflow never
+//     fires on a tag push at all;
+//   - a token written in an EARLIER step, which the publish-step-only scan
+//     never looked at;
+//   - a file that is not valid YAML, which GitHub refuses to run and every
+//     text check waves through.
+//
+// So the checks below read the BLOCK STRUCTURE, not the text.
 const publishPath = path.join(ROOT, '.github', 'workflows', 'publish.yml')
 const publishExists = existsSync(publishPath)
 check('a publish workflow exists', publishExists, publishExists ? '.github/workflows/publish.yml' : 'missing')
 if (publishExists) {
   const publishSource = readFileSync(publishPath, 'utf8')
-  // Comments are stripped before anything is matched. The header of this
-  // workflow NAMES `id-token: write` to explain that the permission is what
-  // the whole mechanism rests on — and a check that reads those words out of
-  // a comment would be satisfied by a file that grants no permission at all.
-  // That is not hypothetical: the first version of this criterion passed
-  // with the permission deleted, because the explanation in the comment
-  // still said the words.
-  const publishCode = publishSource.split('\n').filter((line) => !line.trim().startsWith('#')).join('\n')
-  const permissionsBlock = publishCode.match(/^permissions:\s*\n((?:[ \t]+.*\n?)+)/m)?.[1] ?? ''
-  check('the publish workflow requests an OIDC identity',
-    /id-token:\s*write/.test(permissionsBlock),
-    /id-token:\s*write/.test(permissionsBlock) ? 'permissions: id-token: write'
-      : permissionsBlock.trim() === '' ? 'no permissions block at all'
-        : `permissions block lacks id-token: write (${permissionsBlock.trim().replace(/\n/g, ', ')})`)
-  const usesRefs = [...publishCode.matchAll(/^\s*-\s*uses:\s*(\S+)/gm)].map((m) => m[1])
+  const tree = readStructure(publishSource)
+  // Comments are stripped before anything is matched, but their removal is
+  // not the reason the checks below are safe from a good comment. The header
+  // of this workflow NAMES `id-token: write` to explain that the permission
+  // is what the whole mechanism rests on — and the first version of that
+  // criterion passed with the permission deleted, because the explanation in
+  // the comment still said the words.
+  const publishCode = publishSource.split('\n').map(stripComment).join('\n')
+  const jobNames = tree.jobs && typeof tree.jobs === 'object' && !Array.isArray(tree.jobs)
+    ? Object.keys(tree.jobs)
+    : []
+  const job = jobNames.length === 1 ? tree.jobs[jobNames[0]] : null
+  const tabs = publishSource.split('\n').filter((l) => /^[ ]*\t/.test(l))
+
+  // 1. The file has to BE a workflow. GitHub refuses to run a file it cannot
+  //    parse, and a workflow that never runs reports success in every
+  //    dashboard it appears in.
+  const shapeProblems = []
+  if (!tree.on) shapeProblems.push('no `on:` trigger')
+  if (jobNames.length !== 1) shapeProblems.push(`expected exactly one job, found ${jobNames.length}`)
+  if (job !== null && !job['runs-on']) shapeProblems.push('the job has no `runs-on`')
+  if (job !== null && !(Array.isArray(job.steps) && job.steps.length > 0)) shapeProblems.push('the job has no steps')
+  if (tabs.length > 0) shapeProblems.push(`${tabs.length} line(s) indent with a tab`)
+  check('the publish workflow parses into the expected shape', shapeProblems.length === 0,
+    shapeProblems.length === 0 ? `${jobNames.length} job, ${job && Array.isArray(job.steps) ? job.steps.length : 0} steps`
+      : shapeProblems.join('; '))
+
+  // 2. The OIDC identity. GitHub's rule is that a job-level `permissions:`
+  //    block REPLACES the workflow-level one rather than adding to it, so
+  //    the effective permission is the job's if it has one, and the
+  //    workflow's only if it does not. A job-level `permissions: {}` is
+  //    therefore the same as no OIDC at all.
+  const workflowPerms = tree.permissions && typeof tree.permissions === 'object' && !Array.isArray(tree.permissions)
+    ? tree.permissions
+    : null
+  const jobHasPerms = job !== null && typeof job === 'object'
+    && Object.prototype.hasOwnProperty.call(job, 'permissions')
+  const effectivePerms = jobHasPerms ? job.permissions : workflowPerms
+  const effectiveIdToken = effectivePerms && typeof effectivePerms === 'object' && !Array.isArray(effectivePerms)
+    ? effectivePerms['id-token']
+    : undefined
+  check('the publish job ends up with an OIDC identity', effectiveIdToken === 'write',
+    effectiveIdToken === 'write' ? 'id-token: write'
+      : jobHasPerms ? 'the job-level permissions block replaces the workflow-level one, and it grants no id-token'
+        : workflowPerms === null ? 'no permissions block at all'
+          : 'the workflow permissions block grants no id-token')
+
+  // 3. No third-party action, in any of the forms a step can take.
+  const usesRefs = collectKeys(tree, 'uses').filter((v) => typeof v === 'string')
   check('the publish workflow uses no third-party action',
     usesRefs.length === 0,
     usesRefs.length === 0 ? 'plain git, as the Actions policy requires'
       : `would be rejected at job setup: ${usesRefs.join(', ')}`)
-  check('the publish workflow triggers on version tags',
-    /tags:\s*\n\s*-\s*'v\*'/.test(publishCode),
-    /tags:\s*\n\s*-\s*'v\*'/.test(publishCode) ? "tags: 'v*'" : 'no v* tag filter')
-  // Only the executable lines are inspected. The comment above the publish
-  // step NAMES --otp and NODE_AUTH_TOKEN to explain why they are absent, and
-  // a check that reads those words out of a comment would be reddened by
-  // exactly the documentation that keeps the next editor from adding them.
-  // A criterion that a good comment can trip is a criterion that teaches
-  // people to delete good comments.
-  const publishStep = (publishSource.split(/^\s*-\s*name:\s*Publish\s*$/m)[1] ?? '')
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('#'))
-    .join('\n')
-  const tokenish = ['--otp', 'NODE_AUTH_TOKEN', '_authToken'].filter((t) => publishStep.includes(t))
-  check('the publish step carries no token and no --otp',
+
+  // 4. The trigger, read as a trigger: the tag filter has to sit under
+  //    `on: push:`. A `tags:` under `pull_request:` looks identical in a
+  //    text search and fires on a completely different event.
+  const pushTags = tree.on && tree.on.push && Array.isArray(tree.on.push.tags) ? tree.on.push.tags : []
+  check('the publish workflow triggers on version tags', pushTags.includes('v*'),
+    pushTags.length === 0 ? '`on: push:` carries no tag filter'
+      : pushTags.includes('v*') ? "on: push: tags: 'v*'"
+        : `on: push: tags: ${pushTags.join(', ')}`)
+
+  // 5. No token anywhere in the file. This used to look only at the text
+  //    after the step named "Publish", which is a hole in three ways: a
+  //    token in an earlier step, a token at job level in `env:`, and a
+  //    step RENAMED away from "Publish" (which made the scanned text empty,
+  //    so the check passed on nothing at all).
+  const tokenish = ['--otp', 'NODE_AUTH_TOKEN', '_authToken'].filter((t) => publishCode.includes(t))
+  check('the publish workflow carries no token and no --otp',
     tokenish.length === 0,
     tokenish.length === 0 ? 'OIDC only — the CLI authenticates itself'
       : `mentions ${tokenish.join(', ')}`)
+
+  // 6. The step that publishes exists, and it is the step that publishes.
+  //    Without these two, everything above can be satisfied by a workflow
+  //    that never reaches npm.
+  const stepNames = job && Array.isArray(job.steps)
+    ? job.steps.map((s) => (s && typeof s === 'object' ? s.name : null)).filter((n) => typeof n === 'string')
+    : []
+  check('the publish workflow has a step named Publish', stepNames.includes('Publish'),
+    stepNames.length === 0 ? 'the job has no named steps'
+      : stepNames.includes('Publish') ? stepNames.join(' | ')
+        : `steps are: ${stepNames.join(' | ')}`)
+  check('the publish workflow actually runs npm publish', /^\s*npm publish\s*$/m.test(publishCode),
+    /^\s*npm publish\s*$/m.test(publishCode) ? 'npm publish is there'
+      : 'no `npm publish` command anywhere in the file')
+}
+
+// ------------------------------------------------- the gate's own wiring
+//
+// The criteria above are only worth something if the gate actually runs them,
+// and the mutation review is what proves the criteria can fail at all. A
+// check on the wiring of another check is a small thing, but it is the
+// difference between "the gate checks this" and "somebody checked this once".
+//
+// The match is anchored to a `run:` line, not to the file's text. A criterion
+// that is satisfied by a sentence explaining what the gate does is a
+// criterion that a comment can keep green after the step is deleted.
+const gatePath = path.join(ROOT, '.github', 'workflows', 'gate.yml')
+const gateExists = existsSync(gatePath)
+check('a gate workflow exists', gateExists, gateExists ? '.github/workflows/gate.yml' : 'missing')
+if (gateExists) {
+  const gateSource = readFileSync(gatePath, 'utf8')
+  const gateCode = gateSource.split('\n').map(stripComment).join('\n')
+  // The pattern is built from a ready-made regex fragment, so it is NOT
+  // escaped again here: escaping a fragment that already carries its own
+  // backslashes turns `validate\.mjs` into a pattern that demands a literal
+  // backslash — and a criterion that can never pass is a criterion that
+  // teaches its reader to ignore it.
+  const gateRuns = (fragment) => new RegExp(`^\\s*run:.*${fragment}`, 'm').test(gateCode)
+  check('the gate runs the validator', gateRuns('validate\\.mjs'),
+    gateRuns('validate\\.mjs') ? 'a run: line invokes it' : 'no run: line invokes tools/validate.mjs')
+  check('the gate runs the mutation review', gateRuns('mutate_review\\.ps1'),
+    gateRuns('mutate_review\\.ps1') ? 'a run: line invokes it' : 'no run: line invokes tools/mutate_review.ps1')
+}
+
+// The project dir is needed by the module-dependent checks at the bottom and
+// by the happy path just below. It is required, so it is checked FIRST: a
+// missing one used to reach the happy path and throw out of the harness with
+// a stack trace, instead of the sentence below that says what to set.
+if (!PROJECT || !existsSync(PROJECT)) {
+  console.log(`\n::error::PYRODUCT_PROJECT_DIR is not a directory: ${PROJECT}`)
+  process.exit(1)
 }
 
 // --------------------------------------------------- what the package ships to npm
@@ -178,32 +417,51 @@ check('the shipped patch carries a placeholder, not a real machine path', !shipp
       : `placeholder: ${shippedDir}`)
 
 const { resolveProjectDir } = await import(pathToFileURL(path.join(ROOT, 'lib', 'project-dir.mjs')).href)
+// The fixture path deliberately does NOT contain the word "checkout". The
+// guard quotes the offending path back in its message, so a fixture that
+// contained the word would satisfy the "the message names a checkout" half
+// of the criterion by itself — the first version of this check used exactly
+// such a fixture (`no-such-checkout`), which made the half of it that has
+// teeth a no-op: deleting the word from the guard's message left the check
+// green.
+const missingDir = path.join(ROOT, 'no-such-dir')
 let refusal = ''
 try {
-  resolveProjectDir({ projectDir: path.join(ROOT, 'no-such-checkout') })
+  resolveProjectDir({ projectDir: missingDir })
 } catch (error) {
   refusal = String(error?.message ?? error)
 }
+// The path is removed before the message is judged, so the words that count
+// are the ones the guard wrote rather than the ones in the path it echoed.
+const refusalBody = refusal.split(path.resolve(missingDir)).join('')
 check('a wrong projectDir is refused with an actionable message',
-  refusal.includes('projectDir') && refusal.includes('checkout') && !refusal.includes('ENOENT'),
+  refusalBody.includes('projectDir') && refusalBody.includes('checkout') && !refusalBody.includes('ENOENT'),
   refusal.length === 0 ? 'resolveProjectDir accepted a projectDir that does not exist'
-    : refusal.includes('ENOENT') ? 'failed as a bare spawn error — names the mechanism, not the fix'
-      : refusal.slice(0, 110))
+    : refusalBody.includes('ENOENT') ? 'failed as a bare spawn error — names the mechanism, not the fix'
+      : refusalBody.slice(0, 110))
 
 // The happy path, which is what stops the check above from being satisfied by a
 // guard that rejects everything. A criterion that only ever sees the failure
 // branch cannot tell a working guard from one that throws on all input — and a
 // plugin that refuses every checkout is exactly as broken as one that accepts
 // every checkout, just less visibly.
-const accepted = resolveProjectDir({ projectDir: PROJECT ?? ROOT })
-check('a real MoonBit checkout is accepted', accepted === path.resolve(PROJECT ?? ROOT), accepted)
+//
+// It is wrapped, because a guard that throws on EVERY input used to kill this
+// criterion with an unhandled exception: the harness exited non-zero (right)
+// but named no criterion (useless — a reader could not tell which check had
+// failed, and the failure criterion above had already been satisfied).
+let accepted = null
+let acceptDetail = ''
+try {
+  accepted = resolveProjectDir({ projectDir: PROJECT })
+  acceptDetail = accepted
+} catch (error) {
+  acceptDetail = String(error?.message ?? error).slice(0, 110)
+}
+check('a real MoonBit checkout is accepted', accepted !== null && accepted === path.resolve(PROJECT),
+  accepted === null ? `the guard refused a real checkout: ${acceptDetail}` : accepted)
 
 // --------------------------------------------------- claims that need the module
-
-if (!PROJECT || !existsSync(PROJECT)) {
-  console.log(`\n::error::PYRODUCT_PROJECT_DIR is not a directory: ${PROJECT}`)
-  process.exit(1)
-}
 
 if (!existsSync(BRIDGE)) {
   const built = await run(MOON, ['build', '--target', 'js'], { cwd: PROJECT })

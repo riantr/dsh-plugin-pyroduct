@@ -92,9 +92,14 @@ jobs:
         id: module
         run: |
           set -euo pipefail
-          ref=$(git ls-remote --tags --refs --sort=-v:refname \
-                  https://github.com/riantr/pyroduct 'refs/tags/v*' \
-                | head -1 | cut -f2)
+          # The full output is captured and the first line is taken AFTERWARD.
+          # `git ls-remote ... | head -1` closes the pipe after one line, and
+          # git can still be writing when it does — it dies of SIGPIPE, and
+          # `set -o pipefail` turns that into a failed step. It works today
+          # only because four tags fit in the pipe buffer.
+          refs=$(git ls-remote --tags --refs --sort=-v:refname \
+                  https://github.com/riantr/pyroduct 'refs/tags/v*')
+          ref=$(printf '%s\n' "$refs" | sed -n '1p' | cut -f2)
           if [ -z "$ref" ]; then
             echo "::error::no published pyroduct tag found on GitHub"
             exit 1
@@ -119,3 +124,16 @@ jobs:
           # checkout that owns _build/js/.../jsoncli.js.
           PYRODUCT_PROJECT_DIR: ${{ github.workspace }}/pyroduct
         run: node tools/validate.mjs
+
+      - name: The criteria must still be able to go red
+        # A criterion that cannot fail is not a criterion, and the publish
+        # workflow's criteria are the ones that matter most: they are the
+        # only thing standing between a broken workflow and a tag push that
+        # fails at job setup with no job to read.
+        #
+        # This re-introduces each way the workflow can be broken, one at a
+        # time, and requires the named criterion to FAIL every time. It
+        # exits 0 only when every mutation turned its criterion red.
+        env:
+          PYRODUCT_PROJECT_DIR: ${{ github.workspace }}/pyroduct
+        run: pwsh -NoProfile -File tools/mutate_review.ps1
